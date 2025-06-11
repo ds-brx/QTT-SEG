@@ -1,8 +1,6 @@
 # 🧪 QuickTune Tool for Image Segmentation (QTT-SEG)
 
-QTT-SEG adapts the **[Quicktune Tool (QTT)](https://github.com/automl/quicktunetool)** for efficient hyperparameter optimization in **image segmentation**. It uses meta-learned predictors to estimate model performance and fine-tuning cost, enabling faster and smarter AutoML.
-
-Foundation models, such as SAM (Segment-Anything-Model), have demonstrated strong zero-shot image segmentation capabilities; however, they often underperform on domain-specific tasks. Fine-tuning these foundation models typically demands extensive manual effort and expert knowledge. In this work, we explore the use of Quick-Tune, a meta-learning-based hyperparameter optimization framework, to automate and accelerate the fine-tuning of SAM for image segmentation. (Quick-Tune for segmentation) QTT-SEG predicts performant configurations using meta-learned cost and performance models, efficiently navigating a vast search space of over 200 million configurations. We evaluate QTT-SEG on eight binary and five multiclass segmentation datasets under constrained time budgets. Our results show that QTT-SEG significantly improves over SAM’s zero-shot performance and outperforms AutoGluon Multimodal, a strong AutoML baseline, on most binary tasks under three minutes. On multiclass datasets, QTT-SEG delivers consistent gains over zero-shot SAM. These results demonstrate the potential of meta-learning to automate fine-tuning for segmentation models across diverse and specialized domains.
+QTT-SEG adapts the **[Quicktune Tool (QTT)](https://github.com/automl/quicktunetool)** for efficient hyperparameter optimization in **image segmentation**. It uses meta-learned predictors to estimate model performance and fine-tuning cost, enabling faster finetuning of foundation models like **[SAM](https://github.com/automl/quicktunetool](https://segment-anything.com/))** .
 
 ---
 
@@ -102,8 +100,13 @@ Each experiment records:
 ---
 
 ## 📈 Visual Results
+Performance over Time Budgets: Mean IoU (bars) and std. (error bars) of Zero-shot, AG, and QTT-SEG across all binary and multiclass segmentation tasks. QTT-SEG shows consistent gains with longer budgets. _Note: AG (Autogluon-Multimodal) is evaluated only on binary tasks due to unclear multiclass support_.
 
-_You can include visualizations or example masks here._
+### Binary Datasets Performance
+![Binary Datasets Plot](results/plots/binary_plot_pastel.png)
+
+### Multiclass Datasets Performance
+![Multiclass Datasets Plot](results/plots/multi_plot_pastel.png)
 
 ---
 
