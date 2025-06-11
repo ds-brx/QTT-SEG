@@ -65,10 +65,10 @@ def numpy_collate(batch):
 
 def main(args, max_time=10**18):
     best_score = -float("inf")
-    test_score = 0
     device = "cuda" if torch.cuda.is_available() else "cpu"
     jaccard = JaccardIndex(task="binary").to(device)
-    output_dir = os.path.join(args.output_dir, "sam2model.torch")
+    output_dir = os.path.join(args.output_dir)
+    os.makedirs(output_dir, exist_ok=True)
     
     train_dataset = CustomDataset(dataset_name=args.dataset_name, split="train", args=args)
     train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, collate_fn=numpy_collate)
@@ -213,12 +213,12 @@ def main(args, max_time=10**18):
         train_loss.append(epoch_loss)
 
         val_score = test(split="val", predicted_model=predictor.model, args=args)
-        print(f"Epoch: {epoch} VAL IOU: {val_score} LR: {optimizer.param_groups[0]['lr']}")
+        print(f"Epoch: {epoch} VAL IOU: {val_score}")
         val_iou.append(val_score)
 
         if val_score > best_score:
             best_score = val_score
-            torch.save(predictor.model.state_dict(), output_dir)
+            torch.save(predictor.model.state_dict(), os.path.join(output_dir, "sam2model.torch"))
 
         lc[f"epoch_{epoch}_iou"] = val_score
 
@@ -236,16 +236,9 @@ def main(args, max_time=10**18):
     avg_loss = sum(train_loss) / len(train_loss)
     cost = time.time() - start_time
 
-    test_score = test(
-        split = "test",
-        predicted_model=None, 
-        predicted_model_path = output_dir,
-        args=args,
-        save_images = True)
-
     report = {
         "dataset": args.dataset_name,
-        "score": test_score if test_score else best_score,
+        "score": val_score,
         "cost": cost
     }
 

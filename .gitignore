@@ -11,6 +11,7 @@ result_plots
 third_party/*
 *.csv
 *.png
+archives/*
 
 # macOS system files
 .DS_Store

@@ -2,9 +2,6 @@ import argparse
 from ConfigSpace import (
     Categorical,
     ConfigurationSpace,
-    Constant,
-    EqualsCondition,
-    OrConjunction,
     OrdinalHyperparameter,
 )
 import random
@@ -12,16 +9,24 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
+
+BINARY_DATASETS = ['polyp', 'lesion', 'leaf', 'covid', 'eyes', 'fiber', 'cardiac', 'chest']
+MULTI_DATASETS = ['US', 'human_parsing', 'golf', 'terrain', 'cholec']
+ALL_DATASETS = BINARY_DATASETS + MULTI_DATASETS
+
+ALL_SEEDS = [1729, 8453, 3901, 2167, 9074]
+
 def get_parser():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset_name", default="golf", type=str, help="Dataset Name")
+    parser.add_argument("--dataset_name", default="covid", type=str, help="Dataset Name")
+    parser.add_argument("--seed", default=0, type=int, help="Seed")
     parser.add_argument("--output_dir", default="./outputs", type=str, help="Output path")
     parser.add_argument("--num_train_epochs", default=1000, type=int, help="Number of training epochs")
     parser.add_argument('--return_scores_per_epoch', action='store_true', help="Return scores per epoch")
 
     # Hyperparameters
-    parser.add_argument("--lr", default=0.0001, type=float, help="Initial learning rate")
-    parser.add_argument("--weight_decay", default=0.0001, type=float, help="Weight decay (L2 regularization)")
+    parser.add_argument("--lr", default=1e-5, type=float, help="Initial learning rate")
+    parser.add_argument("--weight_decay", default=0, type=float, help="Weight decay (L2 regularization)")
 
     # LoRA Hyperparameters
     parser.add_argument("--lora", default=0, type=int, choices=[0, 1], help="Enable LoRA")
@@ -52,7 +57,7 @@ def get_parser():
     # Augmentation Hyperparameters
     parser.add_argument("--horizontal_flip", default=0, type=int, choices=[0, 1], help="Enable horizontal flip augmentation")
     parser.add_argument("--vertical_flip", default=0, type=int, choices=[0, 1], help="Enable vertical flip augmentation")
-    parser.add_argument("--random_rotate", default=1, type=int, choices=[0, 1], help="Enable random rotation augmentation")
+    parser.add_argument("--random_rotate", default=0, type=int, choices=[0, 1], help="Enable random rotation augmentation")
 
     return parser
 

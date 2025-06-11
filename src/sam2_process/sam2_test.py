@@ -9,18 +9,15 @@ from tqdm import tqdm
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from src.data.custom_dataloader import CustomDataset
-from transformers import SamProcessor
-from torch.utils.data import Subset
 import os
 import torch
 import torchvision.transforms as transforms
-import torchvision.utils as vutils
-from PIL import Image
 from torchmetrics.classification import JaccardIndex
 from src.utils.utils import get_parser
-
+import pandas as pd
 sam2_checkpoint = "third_party/sam2/checkpoints/sam2.1_hiera_tiny.pt"
 model_cfg = "configs/sam2.1/sam2.1_hiera_t.yaml"
+import random
 
 def test(
         zero_shot=False,
@@ -38,6 +35,7 @@ def test(
         split=split,
         args=args
         )
+    print(args.dataset_name)
     predictor = SAM2ImagePredictor(sam2_model)
 
     if args:
@@ -66,10 +64,10 @@ def test(
 
     if save_images:
         if zero_shot:
-            output_dir = f"Best_Scores/{args.dataset_name}_zero_shot"
+            output_dir = os.path.join(args.output_dir, f"prediction_masks/{args.dataset_name}_zero_shot")
             os.makedirs(output_dir, exist_ok=True)
         else:
-            output_dir = f"Best_Scores/{args.dataset_name}_qtt"
+            output_dir = os.path.join(args.output_dir, f"prediction_masks/{args.dataset_name}_qtt")
             os.makedirs(output_dir, exist_ok=True)
 
     images_saved = 0
@@ -92,7 +90,6 @@ def test(
             else:
                 prd_mask = prd_masks[:,0]
             prd_mask = torch.sigmoid(torch.from_numpy(prd_mask))
-            # print(image.shape, mask.shape, input_box.shape,gt_mask.shape, prd_mask.shape)
 
             gt_mask_bin = gt_mask.int()
             prd_mask_bin = (prd_mask > 0.5).int()
@@ -107,6 +104,9 @@ def test(
                     if len(gt_mask.shape)>2:
                         gt_mask = (torch.argmax(gt_mask, dim=0).byte())* 255
                         prd_mask = (torch.argmax(prd_mask, dim=0).byte())* 255
+                    else:
+                        gt_mask = gt_mask.byte() * 255
+                        prd_mask = prd_mask_bin.byte() * 255
                     gt_mask_pil = transforms.ToPILImage()(gt_mask)
                     prd_mask_pil = transforms.ToPILImage()(prd_mask)
 
@@ -121,11 +121,25 @@ def test(
 
                 
 if __name__ == "__main__":
+    results_csv_path = "zero_shot_results_multiclass.csv"
     parser = get_parser() 
     args = parser.parse_args()
-    mean_score = test(
-        zero_shot = True,
-        args = args,
-        save_images=True
-    )
-    print(mean_score)
+    for dataset in ['human_parsing', 'US', 'golf', 'terrain', 'cholec']:
+        for seed in [1729]:
+            args.seed = seed
+            args.dataset_name = dataset
+            mean_score = test(
+                zero_shot = True,
+                args = args,
+                save_images=True
+            )
+            result = {
+                "DATASET": dataset,
+                "SEED" : seed,
+                "ZERO-SHOT": mean_score,
+            }
+
+            if os.path.exists(results_csv_path):
+                pd.DataFrame([result]).to_csv(results_csv_path, mode='a', index=False, header=False)
+            else:
+                pd.DataFrame([result]).to_csv(results_csv_path, index=False)

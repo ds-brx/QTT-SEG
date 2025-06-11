@@ -65,6 +65,20 @@ def get_bounding_box_prompt(ground_truth_map):
 
     return bounding_box
 
+def get_bounding_box(ground_truth_map):
+    # get bounding box from mask
+    y_indices, x_indices = np.where(ground_truth_map > 0)
+    x_min, x_max = np.min(x_indices), np.max(x_indices)
+    y_min, y_max = np.min(y_indices), np.max(y_indices)
+    # add perturbation to bounding box coordinates
+    H, W = ground_truth_map.shape
+    x_min = max(0, x_min - np.random.randint(0, 20))
+    x_max = min(W, x_max + np.random.randint(0, 20))
+    y_min = max(0, y_min - np.random.randint(0, 20))
+    y_max = min(H, y_max + np.random.randint(0, 20))
+    bbox = [x_min, y_min, x_max, y_max]
+
+    return bbox
 
 def get_random_bounding_box(ground_truth_map, min_area=50):
     binary_mask = (ground_truth_map > 0).astype(np.uint8)
@@ -115,11 +129,18 @@ class CustomDataset():
         self.split = split
         self.dataset_name = dataset_name
 
-        df_folder = "benchmarks/dataframes"
-        full_df = pd.read_csv(f"{df_folder}/{self.dataset_name}_train.csv")[:100]
-        train_df, val_df = train_test_split(full_df, test_size=0.2, random_state=42)
-        test_df = pd.read_csv(f"{df_folder}/{self.dataset_name}_test.csv")[:100]
+        df_folder = "dataframes"
+        full_df = pd.read_csv(f"{df_folder}/{self.dataset_name}_train.csv")
+        test_df = pd.read_csv(f"{df_folder}/{self.dataset_name}_test.csv")
 
+        sample_size = min(100, len(full_df))
+        full_df = full_df.sample(n=sample_size, random_state=args.seed)
+
+        sample_size = min(100, len(test_df))
+        test_df = test_df.sample(n=sample_size, random_state=args.seed)
+        
+        train_df, val_df = train_test_split(full_df, test_size=0.2, random_state=0)
+        
         if self.split == "train":
             self.df = train_df
         elif self.split == "val":
@@ -186,7 +207,6 @@ class CustomDataset():
             mask = augmented["mask"]
 
         classes = np.unique(mask)
-
         if len(classes) > 2:        
             binary_mask = []
             prompt = []
@@ -194,14 +214,14 @@ class CustomDataset():
                 b = np.zeros_like(mask, dtype=np.uint8)
                 if c != 0: # assumes background class is 0
                     b[mask == c] = 1
-                p = get_bounding_box_prompt(b)
-                if p and len(p) == 4:
-                    prompt.append(np.array(p).reshape(1, 4))
-                    binary_mask.append(b)
+                    p = get_bounding_box(b)
+                    if p and len(p) == 4:
+                        prompt.append(np.array(p).reshape(1, 4))
+                        binary_mask.append(b)
 
         else:
             binary_mask = (mask > 0).astype(np.uint8)
-            prompt = get_bounding_box_prompt(binary_mask)
+            prompt = get_bounding_box(binary_mask)
             prompt = np.array(prompt).reshape(1, 4)
 
         inputs = {
@@ -214,8 +234,8 @@ class CustomDataset():
 
 
 if __name__ == "__main__":
-    dataset_name = "US"
+    dataset_name = "human_parsing"
     dataset = CustomDataset(dataset_name, split="train")
-    inputs = dataset[0]
+    inputs = dataset[1]
     for k, v in inputs.items():
         print(k, v.shape)

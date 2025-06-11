@@ -6,7 +6,7 @@
 #SBATCH -e logs/%x.%N.%A.%a.errors
 #SBATCH -J QTT-SEG
 #SBATCH --mail-type=END,FAIL
-#SBATCH -a 1-5
+#SBATCH -a 1-3
 
 echo "Workingdir: $PWD"
 echo "Started at $(date)"
@@ -14,13 +14,12 @@ echo "Running job $SLURM_JOB_NAME with task ID $SLURM_ARRAY_TASK_ID"
 
 export PYTHONUNBUFFERED=1
 
-DATASETS=('human_parsing' 'US' 'golf' 'terrain' 'cholec')
-BUDGET=60  # single value for all
+BUDGET=(60 120 180)
+DATASET='eyes'  # single value for all
 
-DATASET=${DATASETS[$SLURM_ARRAY_TASK_ID-1]}
+BUDGET=${BUDGET[$SLURM_ARRAY_TASK_ID-1]}
 
-echo "Running main.py with dataset $DATASET and budget $BUDGET..."
-python -m main --dataset_name "$DATASET" --time_budget "$BUDGET"
+python -m benchmarks.ag_test_binary --dataset_name "$DATASET" --time_budget "$BUDGET"
 
 echo "DONE with dataset $DATASET"
 echo "Finished at $(date)"

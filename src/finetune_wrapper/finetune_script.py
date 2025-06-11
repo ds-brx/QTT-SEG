@@ -1,18 +1,9 @@
-from src.sam2_process import sam2_train
-import argparse
-import random
 import os
 import pandas as pd
-import argparse
-import json
-import itertools
-import logging
 import numpy as np
 from PIL import Image
-import random
-from ConfigSpace import Configuration
-from src.utils.utils import get_config_space
-import torch
+from src.utils.utils import get_parser, get_config_space, ALL_DATASETS
+from src.sam2_process.sam2_train import main
 
 def finetune_script(
     job: dict,
@@ -47,12 +38,12 @@ def finetune_script(
 
     return_scores_per_epoch = trial_info.get("return_scores_per_epoch", False)
  
-    parser = sam2_train.get_parser()
+    parser = get_parser()
     args, _ = parser.parse_known_args(args)
     if return_scores_per_epoch:
-        result, ious = sam2_train.main(args)
+        result, ious = main(args)
     else:
-        result = sam2_train.main(args)
+        result = main(args)
 
     report = job.copy()
     report.update(result)
@@ -65,7 +56,7 @@ def finetune_script(
     return report
 
 def get_meta_data(dataset_name):
-    df_folder = "benchmarks/dataframes"
+    df_folder = "dataframes"
     df = pd.read_csv(f"{df_folder}/{dataset_name}_train.csv")
     
     num_samples = len(df)
@@ -101,7 +92,7 @@ if __name__ == "__main__":
     i = 0
     while i <  num_configs:
         try:
-            dataset_name = np.random.choice(["leaf", "polyp", "eyes", "lesion", "fiber", "building", "cholec", "golf", "human_parsing", "terrain", "US"])
+            dataset_name = np.random.choice(ALL_DATASETS)
             print(dataset_name)
             config = cs.sample_configuration()
             job = {
