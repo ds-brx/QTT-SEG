@@ -1,241 +1,128 @@
-from kagglehub import dataset_download
-from huggingface_hub import hf_hub_download
-
-from datasets import load_from_disk, load_dataset
 import numpy as np
-import os
-from pathlib import Path
-import json
-from PIL import Image
 import cv2
 import pandas as pd
-import ast
 import albumentations as A
-from albumentations.pytorch import ToTensorV2
-import random
 from sklearn.model_selection import train_test_split
 
-
-def save_mask_with_prompts(mask, prompts, save_path="mask_with_prompts.png"):
-    mask_vis = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-    for (x, y) in prompts:
-        cv2.circle(mask_vis, (x, y), radius=3, color=(0, 0, 255), thickness=-1)
-
-    cv2.imwrite(save_path, mask_vis)
-    print(f"Saved: {save_path}")
-
-def save_mask_with_bbox(mask, bbox, save_path="mask_with_bbox.png"):
-
-    mask_vis = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-
-    if bbox is not None:
-        x_min, y_min, x_max, y_max = bbox
-        cv2.rectangle(mask_vis, (x_min, y_min), (x_max, y_max), color=(0, 255, 0), thickness=2)
-
-    cv2.imwrite(save_path, mask_vis)
-    print(f"Saved: {save_path}")
-
-def save_mask_with_bboxes(mask, prompts, save_path="mask_with_bboxes.png"):
-    mask_vis = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-
-    for prompt in prompts:
-        x_min, y_min, x_max, y_max = prompt.flatten()  
-        cv2.rectangle(mask_vis, (x_min, y_min), (x_max, y_max), color=(0, 255, 0), thickness=2)
-
-    cv2.imwrite(save_path, mask_vis)
-    print(f"Saved: {save_path}")
-
-def get_prompt(ground_truth_map, num_prompts):
-    y_indices, x_indices = np.where(ground_truth_map > 0)
-    foreground_points = list(zip(x_indices, y_indices)) 
-    prompt = [list(random.choice(foreground_points)) for _ in range(num_prompts)]
-    labels = [1 for _ in prompt]
-    return prompt, labels
-
-def get_bounding_box_prompt(ground_truth_map):
-    y_indices, x_indices = np.where(ground_truth_map > 0)
-
-    if len(x_indices) == 0 or len(y_indices) == 0:
-        return None, None  
-
-    x_min, x_max = np.min(x_indices), np.max(x_indices)
-    y_min, y_max = np.min(y_indices), np.max(y_indices)
-
-    bounding_box = [x_min, y_min, x_max, y_max]
-
-    return bounding_box
-
-def get_bounding_box(ground_truth_map):
-    # get bounding box from mask
-    y_indices, x_indices = np.where(ground_truth_map > 0)
-    x_min, x_max = np.min(x_indices), np.max(x_indices)
-    y_min, y_max = np.min(y_indices), np.max(y_indices)
-    # add perturbation to bounding box coordinates
-    H, W = ground_truth_map.shape
-    x_min = max(0, x_min - np.random.randint(0, 20))
-    x_max = min(W, x_max + np.random.randint(0, 20))
-    y_min = max(0, y_min - np.random.randint(0, 20))
-    y_max = min(H, y_max + np.random.randint(0, 20))
-    bbox = [x_min, y_min, x_max, y_max]
-
-    return bbox
-
-def get_random_bounding_box(ground_truth_map, min_area=50):
-    binary_mask = (ground_truth_map > 0).astype(np.uint8)
-
-    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    boxes = []
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area >= min_area:
-            x, y, w, h = cv2.boundingRect(cnt)
-            boxes.append([x, y, x + w, y + h])
-
-    if not boxes:
+def get_bounding_box(mask):
+    """Get bounding box [x_min, y_min, x_max, y_max] for non-zero area."""
+    y_indices, x_indices = np.where(mask > 0)
+    if not x_indices.size or not y_indices.size:
         return None
-    return random.choice(boxes)
 
-def get_largest_bounding_box(ground_truth_map, min_area=50):
-    """
-    Returns the bounding box of the largest connected component in the binary mask.
-    
-    Args:
-        ground_truth_map (np.ndarray): 2D binary mask.
-        min_area (int): Ignore very small regions (noise).
-        
-    Returns:
-        bounding_box (list): [x_min, y_min, x_max, y_max] or None if no object.
-    """
-    binary_mask = (ground_truth_map > 0).astype(np.uint8)
+    x_min, x_max = np.min(x_indices), np.max(x_indices)
+    y_min, y_max = np.min(y_indices), np.max(y_indices)
 
-    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Add random padding (up to 20 pixels)
+    H, W = mask.shape
+    pad = lambda val, lim, is_min: max(0, val - np.random.randint(0, 20)) if is_min else min(lim, val + np.random.randint(0, 20))
+    return [pad(x_min, W, True), pad(y_min, H, True), pad(x_max, W, False), pad(y_max, H, False)]
 
-    max_area = 0
-    best_box = None
 
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area >= min_area and area > max_area:
-            x, y, w, h = cv2.boundingRect(cnt)
-            best_box = [x, y, x + w, y + h]
-            max_area = area
-
-    return best_box
-
-class CustomDataset():
+class CustomDataset:
     def __init__(self, dataset_name, split="test", args=None):
-        self.args = args
+        self.args = args or type('Args', (object,), {})()
         self.split = split
         self.dataset_name = dataset_name
 
         df_folder = "dataframes"
-        full_df = pd.read_csv(f"{df_folder}/{self.dataset_name}_train.csv")
-        test_df = pd.read_csv(f"{df_folder}/{self.dataset_name}_test.csv")
+        train_df = pd.read_csv(f"{df_folder}/{dataset_name}_train.csv").sample(n=min(100, len(pd.read_csv(f"{df_folder}/{dataset_name}_train.csv"))), random_state=getattr(self.args, 'seed', 42))
+        test_df = pd.read_csv(f"{df_folder}/{dataset_name}_test.csv").sample(n=min(100, len(pd.read_csv(f"{df_folder}/{dataset_name}_test.csv"))), random_state=getattr(self.args, 'seed', 42))
 
-        sample_size = min(100, len(full_df))
-        full_df = full_df.sample(n=sample_size, random_state=args.seed)
-
-        sample_size = min(100, len(test_df))
-        test_df = test_df.sample(n=sample_size, random_state=args.seed)
-        
-        train_df, val_df = train_test_split(full_df, test_size=0.2, random_state=0)
-        
-        if self.split == "train":
-            self.df = train_df
-        elif self.split == "val":
-            self.df = val_df
+        if split == "train":
+            self.df = train_test_split(train_df, test_size=0.2, random_state=0)[0]
+        elif split == "val":
+            self.df = train_test_split(train_df, test_size=0.2, random_state=0)[1]
         else:
             self.df = test_df
 
         self.image_col = "image_paths"
         self.label_col = "mask_paths"
+        self.transform = self._build_transforms()
 
-        if self.split == "train" and self.args:
-            transforms = [
-                A.HorizontalFlip(p=0.5) if self.args.horizontal_flip else None,
-                A.VerticalFlip(p=0.5) if self.args.vertical_flip else None,
-                A.Rotate(limit=30, border_mode=cv2.BORDER_REFLECT_101, p=0.5) if self.args.random_rotate else None,                
-                A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
-                A.GaussianBlur(blur_limit=(3, 5), p=0.2),
-            ]
-            self.transform = A.Compose(
-                [t for t in transforms if t is not None],
-                additional_targets={'mask': 'mask'}
-            )
-        else:
-            self.transform = None
+    def _build_transforms(self):
+        if self.split != "train":
+            return None
+        transforms = [
+            A.HorizontalFlip(p=0.5) if getattr(self.args, "horizontal_flip", False) else None,
+            A.VerticalFlip(p=0.5) if getattr(self.args, "vertical_flip", False) else None,
+            A.Rotate(limit=30, border_mode=cv2.BORDER_REFLECT_101, p=0.5) if getattr(self.args, "random_rotate", False) else None,
+            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
+            A.GaussianBlur(blur_limit=(3, 5), p=0.2),
+        ]
+        return A.Compose([t for t in transforms if t], additional_targets={'mask': 'mask'})
 
     def __len__(self):
         return len(self.df)
 
     def __getitem__(self, idx):
         idx = int(idx)
+        max_attempts = len(self)
 
-        while True:
-            image_path = self.df[self.image_col].iloc[idx]
+        for attempt in range(max_attempts):
+            row = self.df.iloc[idx]
+            image_path, mask_path = row[self.image_col], row[self.label_col]
+
             image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
             if image is None or image.size == 0:
-                print(f"[Warning] Invalid image at {image_path}. Skipping index {idx}.")
                 idx = (idx + 1) % len(self)
                 continue
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) if len(image.shape) == 3 else cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
 
-            if len(image.shape) == 3:
-                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            else:
-                image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-
-            mask_path = self.df[self.label_col].iloc[idx]
             mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
             if mask is None or mask.size == 0 or np.sum(mask) == 0:
-                print(f"[Warning] Invalid mask at {mask_path}. Skipping index {idx}.")
                 idx = (idx + 1) % len(self)
                 continue
+            break
+        else:
+            raise RuntimeError("No valid image/mask pair found.")
 
-            break  # valid image and mask found
-
+        # Resize
         r = min(1024 / image.shape[1], 1024 / image.shape[0])
-        new_width = int(image.shape[1] * r)
-        new_height = int(image.shape[0] * r)
+        new_size = (int(image.shape[1] * r), int(image.shape[0] * r))
+        image = cv2.resize(image, new_size)
+        mask = cv2.resize(mask, new_size, interpolation=cv2.INTER_NEAREST)
 
-        image = cv2.resize(image, (new_width, new_height))
-        mask = cv2.resize(mask, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
-
+        # Apply augmentation
         if self.transform:
             augmented = self.transform(image=image, mask=mask)
-            image = augmented["image"]
-            mask = augmented["mask"]
+            image, mask = augmented["image"], augmented["mask"]
 
-        classes = np.unique(mask)
-        if len(classes) > 2:        
-            binary_mask = []
-            prompt = []
-            for c in classes:
-                b = np.zeros_like(mask, dtype=np.uint8)
-                if c != 0: # assumes background class is 0
-                    b[mask == c] = 1
-                    p = get_bounding_box(b)
-                    if p and len(p) == 4:
-                        prompt.append(np.array(p).reshape(1, 4))
-                        binary_mask.append(b)
+        image = image.astype(np.float32) / 255.0
+        # Process mask and bounding boxes
+        H, W = mask.shape
+        unique_classes = np.unique(mask)[1:]  # ignore background (0)
 
+        binary_masks, prompts = [], []
+        if len(unique_classes) > 0:
+            for c in unique_classes:
+                class_mask = (mask == c)
+                box = get_bounding_box(class_mask)
+                if box:
+                    prompts.append(np.array(box).reshape(1, 4))
+                    binary_masks.append(class_mask)
         else:
-            binary_mask = (mask > 0).astype(np.uint8)
-            prompt = get_bounding_box(binary_mask)
-            prompt = np.array(prompt).reshape(1, 4)
+            binary_masks.append((mask > 0))
+            prompts.append(np.array([0, 0, W, H]).reshape(1, 4))
+
+        binary_masks = [m.astype(np.float32) for m in binary_masks]
 
         inputs = {
             "pixel_values": np.array(image),
-            "ground_truth_mask": np.array(binary_mask),
-            "input_box": np.array(prompt)
+            "ground_truth_mask": np.stack(binary_masks) if len(binary_masks) > 1 else binary_masks[0],
+            "input_box": np.concatenate(prompts, axis=0) if len(prompts) > 1 else prompts[0]
         }
-
         return inputs
 
 
 if __name__ == "__main__":
-    dataset_name = "human_parsing"
-    dataset = CustomDataset(dataset_name, split="train")
-    inputs = dataset[1]
-    for k, v in inputs.items():
-        print(k, v.shape)
+    class Args:
+        seed = 42
+        horizontal_flip = True
+        vertical_flip = True
+        random_rotate = True
+
+    dataset = CustomDataset("leaf", split="train", args=Args())
+    sample = dataset[1]
+    for k, v in sample.items():
+        print(f"{k}: shape={v.shape}, dtype={v.dtype}")

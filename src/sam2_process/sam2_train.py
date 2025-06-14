@@ -1,81 +1,57 @@
-from pathlib import Path
-import argparse
-import json
 import os
 import time
-from tqdm import tqdm
-import cv2
-from PIL import Image
-import numpy as np
-from statistics import mean
-from torch.utils.data import Dataset, DataLoader, Subset
+from pathlib import Path
+import argparse
+
 import torch
-from torch.optim import SGD, Adam, AdamW, RMSprop
-from torch.optim.lr_scheduler import (
-    CosineAnnealingLR,
-    CosineAnnealingWarmRestarts, 
-    ReduceLROnPlateau, 
-    OneCycleLR,
-    StepLR,
-    PolynomialLR
-)
 import torch.nn as nn
+from torch.utils.data import DataLoader
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import (
+    CosineAnnealingLR, CosineAnnealingWarmRestarts, 
+    ReduceLROnPlateau, OneCycleLR, StepLR, PolynomialLR
+)
+from tqdm import tqdm
 from peft import get_peft_model, LoraConfig, TaskType
-import matplotlib.pyplot as plt
-from torch.cuda.amp import autocast
+from torchmetrics.classification import JaccardIndex
+
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from src.data.custom_dataloader import CustomDataset
 from src.sam2_process.sam2_test import test
-from src.utils.utils import get_parser, plot_training_metrics
-import random
-from transformers import SamProcessor
-import math
-from torchmetrics.classification import JaccardIndex
-import contextlib
-import os
-import sys
+from src.utils.utils import get_parser
 
-sam2_checkpoint = "third_party/sam2/checkpoints/sam2.1_hiera_tiny.pt"
-model_cfg = "configs/sam2.1/sam2.1_hiera_t.yaml"
-
+# Constants
+SAM2_CHECKPOINT = "third_party/sam2/checkpoints/sam2.1_hiera_tiny.pt"
+MODEL_CFG = "configs/sam2.1/sam2.1_hiera_t.yaml"
 
 class BCEDiceLoss(nn.Module):
     def __init__(self):
-        super(BCEDiceLoss, self).__init__()
+        super().__init__()
         self.bce = nn.BCEWithLogitsLoss()
 
     def forward(self, inputs, targets):
         bce_loss = self.bce(inputs, targets)
-
         inputs = torch.sigmoid(inputs)
-
-        inputs = inputs.view(inputs.size(0), -1)
-        targets = targets.view(targets.size(0), -1)
-
+        
+        # Flatten tensors
+        inputs = inputs.flatten(1)
+        targets = targets.flatten(1)
+        
         smooth = 1e-5
-        intersection = (inputs * targets).sum(dim=1)
-        dice = (2. * intersection + smooth) / (inputs.sum(dim=1) + targets.sum(dim=1) + smooth)
+        intersection = (inputs * targets).sum(1)
+        dice = (2. * intersection + smooth) / (inputs.sum(1) + targets.sum(1) + smooth)
         dice_loss = 1 - dice.mean()
-
+        
         return bce_loss + dice_loss
 
 def numpy_collate(batch):
-    return batch  
+    return batch
 
-def main(args, max_time=10**18):
-    best_score = -float("inf")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    jaccard = JaccardIndex(task="binary").to(device)
-    output_dir = os.path.join(args.output_dir)
-    os.makedirs(output_dir, exist_ok=True)
+def setup_model(args, device):
+    """Initialize and configure the SAM2 model with optional LoRA."""
+    model = build_sam2(MODEL_CFG, SAM2_CHECKPOINT, device=device)
     
-    train_dataset = CustomDataset(dataset_name=args.dataset_name, split="train", args=args)
-    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, collate_fn=numpy_collate)
-    
-    sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device) 
-    predictor = SAM2ImagePredictor(sam2_model)
-
     if args.lora:
         lora_config = LoraConfig(
             r=args.lora_rank,
@@ -85,26 +61,20 @@ def main(args, max_time=10**18):
             bias="none",
             task_type=TaskType.FEATURE_EXTRACTION
         )
-        peft_model = get_peft_model(sam2_model, lora_config)
-        predictor.model = peft_model
-        for name, param in predictor.model.named_parameters():
-            if "mask_decoder" in name or "prompt_encoder" in name:
-                param.requires_grad = True
-    else:
-        for param in predictor.model.parameters():
-            param.requires_grad = False
-        for name, param in predictor.model.named_parameters():
-            if "mask_decoder" in name or "prompt_encoder" in name:
-                param.requires_grad = True
+        model = get_peft_model(model, lora_config)
+    
+    # Freeze/unfreeze parameters
+    for param in model.parameters():
+        param.requires_grad = False
+    for name, param in model.named_parameters():
+        if "mask_decoder" in name or "prompt_encoder" in name:
+            param.requires_grad = True
+    
+    return model
 
-    optimizer = torch.optim.AdamW(
-        params=filter(lambda p: p.requires_grad, predictor.model.parameters()),
-        lr=args.lr,
-        weight_decay=args.weight_decay
-    )
-
-    steps_per_epoch = len(train_loader)
-    scheduler_cls = {
+def get_scheduler(optimizer, args, steps_per_epoch):
+    """Configure learning rate scheduler based on args."""
+    schedulers = {
         "cosine_warm": lambda opt: CosineAnnealingWarmRestarts(
             opt, T_0=args.cosine_t0, T_mult=args.cosine_t_mult, eta_min=args.lr / 10
         ),
@@ -125,130 +95,151 @@ def main(args, max_time=10**18):
             anneal_strategy='cos'
         ),
         "step": lambda opt: StepLR(
-            opt, step_size=args.step_size, gamma=args.decay_rate, last_epoch=-1
+            opt, step_size=args.step_size, gamma=args.decay_rate
         ),
         "poly": lambda opt: PolynomialLR(
             opt, total_iters=args.num_train_epochs * steps_per_epoch, power=args.poly_power
         )
-    }.get(args.sched)
+    }
+    return schedulers.get(args.sched, None)
 
-    scheduler = scheduler_cls(optimizer) if scheduler_cls else None
-
-    loss_fn = BCEDiceLoss()
-    lc = {}
-    train_loss = []
-    train_iou = []
-    val_iou = []
-
+def train_epoch(predictor, train_loader, optimizer, loss_fn, jaccard, device, scheduler=None):
+    """Run one training epoch with proper device handling."""
     predictor.model.train()
-    time_exceeded = False
-
-    start_time = time.time()
-
-    for epoch in range(args.num_train_epochs):
-        batch_iou = batch_loss = 0
-
-        for i, batch in tqdm(enumerate(train_loader), total=len(train_loader), desc="Training Progress", leave=True):
+    total_loss = total_iou = 0
+    
+    for batch in tqdm(train_loader, desc="Training", leave=False):
+        sample = batch[0]
+        if not sample:
+            continue
             
-            if time.time() - start_time > max_time:
-                print(f"Time limit of {max_time} seconds reached. Stopping training early.")
-                time_exceeded = True
-                break
-            
-            sample = batch[0]
-            if len(sample) == 0:
-                continue
+        # Keep image as numpy for predictor
+        image = sample["pixel_values"]  # numpy array
+        mask = torch.as_tensor(sample["ground_truth_mask"], device=device).float()
+        input_box = torch.as_tensor(sample["input_box"], device=device)
+        
+        if mask.ndim == 2:
+            mask = mask.unsqueeze(0)
 
-            image, mask, input_box = sample["pixel_values"], sample["ground_truth_mask"], sample["input_box"]
-            predictor.set_image(image)
+        # Set image (requires numpy)
+        predictor.set_image(image)
+        
+        # Prepare prompts (uses device tensors internally)
+        _, _, _, unnorm_box = predictor._prep_prompts(
+            point_coords=None, 
+            point_labels=None, 
+            box=input_box.cpu().numpy(),  # Convert to numpy for processing
+            mask_logits=None, 
+            normalize_coords=True
+        )
+        unnorm_box = torch.as_tensor(unnorm_box, device=device)
+        
+        # Model forward pass
+        sparse_embeddings, dense_embeddings = predictor.model.sam_prompt_encoder(
+            points=None, 
+            boxes=unnorm_box, 
+            masks=None
+        )
 
-            mask_input, unnorm_coords, labels, unnorm_box = predictor._prep_prompts(
-                point_coords=None, point_labels=None, box=input_box, mask_logits=None, normalize_coords=True
-            )
-            sparse_embeddings, dense_embeddings = predictor.model.sam_prompt_encoder(
-                points=None, boxes=unnorm_box, masks=None
-            )
+        high_res_features = [feat_level[-1].unsqueeze(0) for feat_level in predictor._features["high_res_feats"]]
+        low_res_masks, _, _, _ = predictor.model.sam_mask_decoder(
+            image_embeddings=predictor._features["image_embed"][-1].unsqueeze(0),
+            image_pe=predictor.model.sam_prompt_encoder.get_dense_pe(),
+            sparse_prompt_embeddings=sparse_embeddings,
+            dense_prompt_embeddings=dense_embeddings,
+            multimask_output=True,
+            repeat_image=unnorm_box.shape[0] > 1,
+            high_res_features=high_res_features,
+        )
 
-            batched_mode = unnorm_box.shape[0] > 1
-            high_res_features = [feat_level[-1].unsqueeze(0) for feat_level in predictor._features["high_res_feats"]]
-            low_res_masks, prd_scores, _, _ = predictor.model.sam_mask_decoder(
-                image_embeddings=predictor._features["image_embed"][-1].unsqueeze(0),
-                image_pe=predictor.model.sam_prompt_encoder.get_dense_pe(),
-                sparse_prompt_embeddings=sparse_embeddings,
-                dense_prompt_embeddings=dense_embeddings,
-                multimask_output=True,
-                repeat_image=batched_mode,
-                high_res_features=high_res_features,
-            )
+        prd_masks = predictor._transforms.postprocess_masks(low_res_masks, predictor._orig_hw[-1])
+        
+        # Calculate loss and metrics
+        loss = loss_fn(prd_masks[:, 0], mask)
+        total_loss += loss.item()
+        iou = jaccard((prd_masks[:, 0] > 0.5).int(), mask.int())
+        total_iou += iou.mean().item()
 
-            prd_masks = predictor._transforms.postprocess_masks(low_res_masks, predictor._orig_hw[-1])
-            gt_mask = torch.tensor(mask).float().to(device)
+        # Backpropagation
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(predictor.model.parameters(), 1.0)
+        optimizer.step()
 
-            if len(gt_mask.shape)==2:
-                gt_mask = gt_mask.unsqueeze(0)
-
-            loss = loss_fn(prd_masks[:, 0], gt_mask)
-            batch_loss += loss.item()
-
-            gt_mask_bin = gt_mask.int()
-            prd_mask_bin = (prd_masks[:, 0] > 0.5).int()
-
-            iou = jaccard(prd_mask_bin, gt_mask_bin)
-            batch_iou += iou.mean().item()
-
-            predictor.model.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(predictor.model.parameters(), max_norm=1.0)
-            optimizer.step()
-
-            if isinstance(scheduler, (OneCycleLR, PolynomialLR)):
-                scheduler.step()
-            elif isinstance(scheduler, CosineAnnealingWarmRestarts):
-                scheduler.step(epoch + i / steps_per_epoch)
-
-        epoch_iou = batch_iou / len(train_dataset)
-        train_iou.append(epoch_iou)
-
-        epoch_loss = batch_loss / len(train_dataset)
-        train_loss.append(epoch_loss)
-
-        val_score = test(split="val", predicted_model=predictor.model, args=args)
-        print(f"Epoch: {epoch} VAL IOU: {val_score}")
-        val_iou.append(val_score)
-
-        if val_score > best_score:
-            best_score = val_score
-            torch.save(predictor.model.state_dict(), os.path.join(output_dir, "sam2model.torch"))
-
-        lc[f"epoch_{epoch}_iou"] = val_score
-
-        if isinstance(scheduler, ReduceLROnPlateau):
-            scheduler.step(val_score)
-        elif isinstance(scheduler, (StepLR, CosineAnnealingLR)):
+        if scheduler and isinstance(scheduler, (OneCycleLR, PolynomialLR)):
             scheduler.step()
 
-        if time_exceeded:
+    return total_loss / len(train_loader.dataset), total_iou / len(train_loader.dataset)
+
+
+def main(args, max_time=10**18):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    # Initialize components
+    model = setup_model(args, device)
+    predictor = SAM2ImagePredictor(model)
+    jaccard = JaccardIndex(task="binary").to(device)
+    loss_fn = BCEDiceLoss()
+    
+    # Data loading
+    train_dataset = CustomDataset(dataset_name=args.dataset_name, split="train", args=args)
+    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, collate_fn=numpy_collate)
+    
+    # Optimizer and scheduler
+    optimizer = AdamW(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=args.lr,
+        weight_decay=args.weight_decay
+    )
+    scheduler = get_scheduler(optimizer, args, len(train_loader))
+    
+    # Training loop
+    best_score = -float("inf")
+    metrics = {"train_loss": [], "train_iou": [], "val_iou": []}
+    start_time = time.time()
+    
+    for epoch in range(args.num_train_epochs):
+        if time.time() - start_time > max_time:
+            print(f"Time limit of {max_time} seconds reached.")
             break
-
-    # plot_training_metrics(train_loss, train_iou, val_iou, save_path='training_metrics.png')
-
-    avg_iou = sum(train_iou) / len(train_iou)
-    avg_loss = sum(train_loss) / len(train_loss)
-    cost = time.time() - start_time
-
+            
+        # Training
+        epoch_loss, epoch_iou = train_epoch(
+            predictor, train_loader, optimizer, loss_fn, jaccard, device, scheduler
+        )
+        metrics["train_loss"].append(epoch_loss)
+        metrics["train_iou"].append(epoch_iou)
+        
+        # Validation
+        val_score = test(split="val", predicted_model=predictor.model, args=args, device=device)
+        metrics["val_iou"].append(val_score)
+        print(f"Epoch {epoch}: Loss={epoch_loss:.4f}, Train IoU={epoch_iou:.4f}, Val IoU={val_score:.4f}")
+        
+        # Save best model
+        if val_score > best_score:
+            best_score = val_score
+            torch.save(model.state_dict(), os.path.join(args.output_dir, "sam2model.torch"))
+        
+        # Scheduler step
+        if scheduler:
+            if isinstance(scheduler, ReduceLROnPlateau):
+                scheduler.step(val_score)
+            elif isinstance(scheduler, (StepLR, CosineAnnealingLR, CosineAnnealingWarmRestarts)):
+                scheduler.step()
+    
+    # Final report
     report = {
         "dataset": args.dataset_name,
-        "score": val_score,
-        "cost": cost
+        "score": best_score,
+        "cost": time.time() - start_time
     }
-
+    
     if args.return_scores_per_epoch:
-        return report, lc
+        return report, {f"epoch_{i}_iou": val for i, val in enumerate(metrics["val_iou"])}
     return report
 
 if __name__ == "__main__":
-    parser = get_parser() 
-    args = parser.parse_args()
+    args = get_parser().parse_args()
     report = main(args)
-    
-
+    print(report)
