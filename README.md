@@ -30,35 +30,30 @@ cd ../..
 
 ## 🧾 Step 1: Download and Prepare Dataset Splits
 
-Before running the tuning pipeline, you must prepare `train.csv` and `test.csv` containing image-mask pairs for the target dataset. Use the helper script:
+Before tuning, prepare the dataset CSV files (*_train.csv, *_test.csv) containing image-mask pairs.
+Use the helper script below (example uses the [Forest Aerial Images for Segmentation Dataset](https://www.kaggle.com/datasets/quadeer15sh/augmented-forest-segmentation?select=Forest+Segmented):
 
 ```bash
-python src/utils/setup_configs.py \
-  --dataset aysendegerli/qatacov19-dataset \
-  --image-dir QaTa-COV19/QaTa-COV19-v1/Images \
-  --mask-dir QaTa-COV19/QaTa-COV19-v1/Ground-truths \
-  --mask-prefix mask_ \
-  --output-dir dataframes \
-  --name covid \
-  --test-size 0.2
+# Download dataset via KaggleHub
+python -m src.utils.download_dataset_kaggle \
+  --dataset_slug quadeer15sh/augmented-forest-segmentation \
+  --cache_dir .
+
+# Generate matching image-mask dataframes
+python -m src.utils.make_image_mask_dataframe \
+  --images ./datasets/quadeer15sh/.../images \
+  --masks ./datasets/quadeer15sh/.../masks \
+  --name forest
 ```
+This script:
+- Downloads the dataset using KaggleHub
+- Matches images and masks by ID
+- Splits into train/test sets
+- Saves CSVs in `dataframes`:
+  - `forest_train.csv`
+  - `forest_test.csv`
 
-### Optional: Set Kaggle Credentials
-
-If your system isn't already configured for Kaggle, provide credentials inline:
-
-```bash
-  --kaggle-username YOUR_USERNAME \
-  --kaggle-key YOUR_KEY
-```
-
-This will:
-- Download the dataset via [KaggleHub](https://github.com/KaggleHub/kagglehub)
-- Match each image to its mask (by prefix)
-- Split into training/testing sets
-- Save as:  
-  - `dataframes/covid_train.csv`  
-  - `dataframes/covid_test.csv`
+ > ⚠️ Adjust the `--images` and `--masks` paths to match your dataset's folder structure printed after download.
 
 ---
 
@@ -66,36 +61,35 @@ This will:
 
 ```bash
 python main.py \
-  --dataset_name covid \
+  --dataset_name forest \
   --time_budget 60 \
-  --output_dir ./results \
+  --output_dir ./QTT_results \
   --train_predictors \
   --setup_configs 128
 ```
-
-### 🔧 Arguments
-
-| Argument            | Description                                      | Default    |
-|---------------------|--------------------------------------------------|------------|
-| `--dataset_name`     | Name of the segmentation dataset                | `"leaf"`   |
-| `--time_budget`      | Time budget in seconds for tuning               | `30`       |
-| `--output_dir`       | Output folder for logs and results              | `"."`      |
-| `--train_predictors` | Train cost/performance predictors               | `False`    |
-| `--setup_configs`    | Number of random configs to initialize tuner    | `128`      |
-
 ---
 
 ## 📊 Outputs
+After running the pipeline, the following directories and files will be created under the specified `--output_dir` (e.g., `./QTT_results`):
 
-After running, you will find:
-- 📂 `results/`: performance CSV logs (`*_results.csv`)
-- 📂 `logs/`: tuning history and checkpoints
-- 📂 `CostPredictor/` and `PerfPredictor/`: trained predictors
+```text
+QTT_results/
+├── results.csv                    # Final performance results
+├── PerfPredictor/                 # Trained performance predictor
+├── CostPredictor/                 # Trained cost predictor
+└── logs/
+    └── <dataset>_<budget>/       # Logs scoped to dataset and time budget
+        ├── qtt_history_logs/     # Tuning trajectory logs
+        ├── config_checkpoints/   # Configuration checkpoints
+        ├── opt/                  # Optimizer state logs
+        └── tuner/                # Tuner-specific logs
+```
 
 Each experiment records:
-- Best configuration found
-- Final test IOU score
-- Tuning trajectory and runtime
+- ✅ The best configuration found within the time budget
+- 📈 The final test IoU score
+- 🕒 Full tuning trajectory and runtime
+- 💾 Checkpoints for cost and performance predictors
 
 ---
 
@@ -114,9 +108,5 @@ Performance over Time Budgets: Mean IoU (bars) and std. (error bars) of Zero-sho
 Currently, this repository is under restricted access and contributions via pull requests are not yet enabled.
 
 If you are interested in contributing or collaborating on this project, please consider the following options:
-
-- **Contact the maintainers**: Reach out via email or other communication channels (to be specified) to discuss potential collaboration.
 - **Watch this space**: The repository will be made public soon, and contribution guidelines will be added at that time.
-- **Feature requests and issues**: If you have ideas or encounter problems, please open an issue once the repository is public, or contact the maintainers directly for feedback.
-
 Thank you for your interest and support!
