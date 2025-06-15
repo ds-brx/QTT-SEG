@@ -210,6 +210,7 @@ def main():
         args_list = [f"--{k}={v}" for k, v in config.items()]
         args_list.extend([f"--dataset_name={args.dataset_name}"])
         tune_args = get_parser().parse_args(args_list)
+        tune_args.output_dir = paths["base_output"]
         
         # Evaluate best model
         test_score = test(
