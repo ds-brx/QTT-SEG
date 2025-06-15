@@ -12,7 +12,7 @@ from src.sam2_process.sam2_test import test
 from src.utils.utils import get_config_space, get_parser, ALL_SEEDS
 
 # Constants
-DEFAULT_OUTPUT_DIR = Path("/work/dlclarge2/dasb-Camvid/QTT")
+DEFAULT_OUTPUT_DIR = Path(".")
 DEFAULT_META_FILE = "src/finetune_wrapper/finetuning_results_sam.csv"
 DEFAULT_TIME_BUDGET = 30  # seconds
 DEFAULT_SETUP_CONFIGS = 128
