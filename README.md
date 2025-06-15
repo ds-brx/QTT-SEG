@@ -75,6 +75,7 @@ After running the pipeline, the following directories and files will be created 
 ```text
 QTT_results/
 ├── results.csv                    # Final performance results
+├── prediction_masks               # Sample Prediction Masks
 ├── PerfPredictor/                 # Trained performance predictor
 ├── CostPredictor/                 # Trained cost predictor
 └── logs/
