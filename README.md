@@ -1,6 +1,6 @@
 # 🧪 QuickTune Tool for Image Segmentation (QTT-SEG)
 
-QTT-SEG adapts the **[Quicktune Tool (QTT)](https://github.com/automl/quicktunetool)** for efficient hyperparameter optimization in **image segmentation**. It uses meta-learned predictors to estimate model performance and fine-tuning cost, enabling faster finetuning of foundation models like **[SAM](https://github.com/automl/quicktunetool](https://segment-anything.com/))** .
+QTT-SEG adapts the **[Quicktune Tool (QTT)](https://github.com/automl/quicktunetool)** for efficient hyperparameter optimization in **image segmentation**. It uses meta-learned predictors to estimate model performance and fine-tuning cost, enabling faster finetuning of foundation models like **[SAM](https://segment-anything.com/)** .
 
 ---
 
