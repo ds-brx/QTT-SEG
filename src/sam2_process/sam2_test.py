@@ -108,9 +108,10 @@ def test(split="test", predicted_model=None, predicted_model_path=None,
                     prd_masks[0] if gt_mask.ndim == 2 else prd_masks[:, 0]
                 ).to(device))
                 
+                prd_mask = (prd_mask > 0.5)
                 # Only calculate IoU for the fine-tuned model
                 if not is_zero_shot:
-                    iou = jaccard((prd_mask > 0.5).int(), gt_mask.int())
+                    iou = jaccard(prd_mask.int(), gt_mask.int())
                     mean_iou += iou.item()
                 
                 # Save sample images if enabled
